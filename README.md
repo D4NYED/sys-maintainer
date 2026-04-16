@@ -142,6 +142,17 @@ Valida:
 
 ---
 
+## ⏱️ Scheduled Execution (Cron)
+
+You can automate the execution of the script using cron.
+
+Example: run every hour
+
+```bash
+0 * * * * /path/to/sys-maintainer/scripts/maintainer.sh >> /path/to/logs/cron.log 2>&1
+```
+---
+
 ## 🧠 Objetivo del proyecto
 
 Este proyecto demuestra:
