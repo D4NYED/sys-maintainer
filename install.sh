@@ -7,30 +7,45 @@ echo "🚀 Instalando entorno..."
 # =========================
 # CREAR DIRECTORIOS
 # =========================
-mkdir -p logs
-mkdir -p backups
-
+mkdir -p logs backups
 echo "📁 Directorios creados"
 
 # =========================
 # PERMISOS
 # =========================
-chmod +x scripts/maintainer.sh
-chmod +x tests/test.sh
-
+chmod +x scripts/maintainer.sh tests/test.sh
 echo "🔐 Permisos asignados"
 
 # =========================
-# DEPENDENCIAS
+# DETECTAR GESTOR DE PAQUETES
 # =========================
-echo "📦 Instalando dependencias..."
-
 if command -v apt >/dev/null 2>&1; then
-    sudo apt update
-    sudo apt install -y rsync
+    PKG_MANAGER="apt"
+elif command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+elif command -v yum >/dev/null 2>&1; then
+    PKG_MANAGER="yum"
+else
+    echo "❌ No supported package manager found"
+    exit 1
 fi
 
-echo "✅ Dependencias OK"
+echo "📦 Using package manager: $PKG_MANAGER"
+
+# =========================
+# INSTALAR DEPENDENCIAS
+# =========================
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "📦 Instalando rsync..."
+
+    if [[ "$PKG_MANAGER" == "apt" ]]; then
+        sudo apt update && sudo apt install -y rsync
+    else
+        sudo $PKG_MANAGER install -y rsync
+    fi
+else
+    echo "✅ rsync ya instalado"
+fi
 
 # =========================
 # CHECK CONFIG
@@ -47,6 +62,11 @@ echo "⚙️ Config encontrada"
 # =========================
 echo "🧪 Ejecutando test..."
 
-./tests/test.sh
+if ./tests/test.sh; then
+    echo "✅ Tests OK"
+else
+    echo "❌ Tests fallaron"
+    exit 1
+fi
 
 echo "🎉 Instalación completada"
