@@ -1,3 +1,10 @@
+## 🧩 Flags
+
+- `--dry-run` → simula la ejecución sin aplicar cambios  
+- `--only-backup` → ejecuta solo el backup  
+- `--skip-docker` → omite comprobación de Docker  
+- `--verbose` → muestra logs en consola  
+
 # 🛠️ Sys-Maintainer
 
 Herramienta de automatización en Bash para tareas básicas de mantenimiento en sistemas Linux: limpieza, backups, monitorización de servicios y contenedores.
@@ -62,13 +69,19 @@ Esto:
 
 ## ▶️ Uso
 
-Ejecutar el script principal:
-
 ```bash
-./scripts/maintainer.sh
-```
+# Simulación (no ejecuta cambios)
+./scripts/maintainer.sh --dry-run --verbose
 
----
+# Ejecución real
+./scripts/maintainer.sh --verbose
+```
+## 📌 Flujo de ejecución
+
+1. Limpia archivos antiguos en `/tmp`
+2. Sincroniza el directorio de backup con `rsync`
+3. Comprueba servicios del sistema y los reinicia si es necesario
+4. Verifica el estado de contenedores Docker
 
 ## ⚙️ Configuración
 
@@ -83,7 +96,7 @@ Ejemplo:
 ```bash
 TMP_DAYS=7
 
-BACKUP_SOURCE="${HOME}/Documentos"
+BACKUP_SOURCE="${HOME}/backup_source"
 BACKUP_DEST="${HOME}/backups"
 
 SERVICES=("nginx" "apache2")
@@ -149,7 +162,7 @@ You can automate the execution of the script using cron.
 Example: run every hour
 
 ```bash
-0 * * * * /path/to/sys-maintainer/scripts/maintainer.sh >> /path/to/logs/cron.log 2>&1
+0 * * * * /home/user/sys-maintainer/scripts/maintainer.sh >> /home/user/sys-maintainer/logs/cron.log 2>&1
 ```
 ---
 
@@ -167,7 +180,7 @@ Este proyecto demuestra:
 
 ## 📌 Estado
 
-Proyecto funcional y preparado para uso en entornos de laboratorio o pequeñas infraestructuras.
+Versión estable. Apta para entornos de laboratorio y pequeñas infraestructuras.
 
 ---
 
