@@ -5,6 +5,26 @@
 # =========================
 set -euo pipefail
 
+DRY_RUN=false
+ONLY_BACKUP=false
+SKIP_DOCKER=false
+VERBOSE=false
+
+# =========================
+# PARSE FLAGS
+# =========================
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        --only-backup) ONLY_BACKUP=true ;;
+        --skip-docker) SKIP_DOCKER=true ;;
+        --verbose) VERBOSE=true ;;
+        *) echo "❌ Flag desconocido: $arg"; exit 1 ;;
+    esac
+done
+
+[[ "$DRY_RUN" == true ]] && echo "🧪 DRY-RUN MODE ACTIVADO"
+
 # =========================
 # RUTAS BASE
 # =========================
@@ -13,46 +33,101 @@ CONFIG_FILE="$BASE_DIR/config/config.conf"
 LOG_FILE="$BASE_DIR/logs/maintainer.log"
 LOCK_FILE="/tmp/maintainer.lock"
 
-# =========================
-# LOCK (evitar ejecución simultánea)
-# =========================
-if [[ -f "$LOCK_FILE" ]]; then
-    echo "❌ Script ya en ejecución"
-    exit 1
-fi
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
 
-trap 'rm -f "$LOCK_FILE"' EXIT
-touch "$LOCK_FILE"
+# =========================
+# LOCK (flock seguro)
+# =========================
+exec 200>"$LOCK_FILE"
+flock -n 200 || { echo "❌ Script ya en ejecución"; exit 1; }
 
 # =========================
 # VALIDAR CONFIG
 # =========================
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "❌ Config no encontrada"
-    exit 1
-fi
+[[ -f "$CONFIG_FILE" ]] || { echo "❌ Config no encontrada"; exit 1; }
 
-source "$CONFIG_FILE"
+# =========================
+# CARGA CONFIG SEGURA
+# =========================
+while IFS='=' read -r key value; do
+    [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+
+    key="$(echo "$key" | xargs)"
+    value="$(echo "$value" | xargs)"
+
+    # limpiar comillas
+    value="${value%\"}"
+    value="${value#\"}"
+
+    case "$key" in
+        TMP_DAYS|BACKUP_SOURCE|BACKUP_DEST|CONTAINER_NAME)
+            declare "$key=$value"
+            ;;
+        SERVICES)
+            eval "$key=$value"
+            ;;
+    esac
+done < "$CONFIG_FILE"
+
+# =========================
+# EXPANSIÓN SEGURA DE RUTAS
+# =========================
+BACKUP_SOURCE="${BACKUP_SOURCE/#\~/$HOME}"
+BACKUP_SOURCE="${BACKUP_SOURCE//\$\{HOME\}/$HOME}"
+
+BACKUP_DEST="${BACKUP_DEST/#\~/$HOME}"
+BACKUP_DEST="${BACKUP_DEST//\$\{HOME\}/$HOME}"
 
 # =========================
 # LOGGING
 # =========================
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    local msg="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" >> "$LOG_FILE"
+    [[ "$VERBOSE" == true ]] && echo "$msg"
 }
 
-# Rotación simple (1MB)
+run_cmd() {
+    local cmd="$*"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log "[DRY-RUN] $cmd"
+        return 0
+    fi
+
+    "$@"
+}
+
+# =========================
+# ROTACIÓN LOG
+# =========================
 if [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE") -gt 1000000 ]]; then
-    > "$LOG_FILE"
+    : > "$LOG_FILE"
 fi
 
 log "🚀 Inicio script"
 
 # =========================
-# VALIDACIONES GENERALES
+# VALIDACIONES
 # =========================
 validate_env() {
-    [[ -d "$BACKUP_SOURCE" ]] || { log "❌ BACKUP_SOURCE no existe"; exit 1; }
+
+    if [[ -z "${BACKUP_SOURCE:-}" ]]; then
+        log "❌ BACKUP_SOURCE vacío"
+        exit 1
+    fi
+
+    if [[ "$BACKUP_SOURCE" == "/" ]]; then
+        log "❌ BACKUP_SOURCE inválido (/)"
+        exit 1
+    fi
+
+    if [[ ! -d "$BACKUP_SOURCE" ]]; then
+        log "⚠️ BACKUP_SOURCE no existe, creando..."
+        mkdir -p "$BACKUP_SOURCE"
+    fi
+
     mkdir -p "$BACKUP_DEST"
 }
 
@@ -64,29 +139,18 @@ cleanup_tmp() {
 
     [[ -n "${TMP_DAYS:-}" ]] || { log "❌ TMP_DAYS vacío"; return; }
 
-    if ! find /tmp -type f -mtime +"$TMP_DAYS" -delete 2>/dev/null; then
-    log "⚠️ Error durante limpieza de /tmp"
-fi
+    run_cmd timeout 5 find /tmp -maxdepth 1 -type f -mtime +"$TMP_DAYS" -exec rm -f {} \; 2>/dev/null
 
     log "✅ Limpieza completada"
 }
 
 # =========================
-# BACKUP (RSYNC SEGURO)
+# BACKUP
 # =========================
 backup() {
-    log "💾 Backup con rsync"
+    log "💾 Backup: $BACKUP_SOURCE → $BACKUP_DEST"
 
-    # Seguridad: evitar rutas peligrosas
-    if [[ "$BACKUP_SOURCE" == "/" ]]; then
-        log "❌ BACKUP_SOURCE inválido (/)"
-        exit 1
-    fi
-
-    # PRIMERA VEZ: dry-run (opcional, comenta si no quieres)
-    # rsync -av --delete --dry-run "$BACKUP_SOURCE/" "$BACKUP_DEST/"
-
-    rsync -av --delete "$BACKUP_SOURCE/" "$BACKUP_DEST/" >/dev/null
+    run_cmd rsync -a --delete "$BACKUP_SOURCE/" "$BACKUP_DEST/"
 
     log "✅ Backup sincronizado"
 }
@@ -106,7 +170,7 @@ check_services() {
             log "✅ Servicio $svc activo"
         else
             log "⚠️ Servicio $svc caído. Reiniciando..."
-            systemctl restart "$svc"
+            run_cmd systemctl restart "$svc"
         fi
     done
 }
@@ -115,6 +179,8 @@ check_services() {
 # DOCKER
 # =========================
 check_docker() {
+
+    [[ "$SKIP_DOCKER" == true ]] && { log "⏭️ Docker omitido (--skip-docker)"; return; }
 
     if ! command -v docker >/dev/null 2>&1; then
         log "❌ Docker no instalado"
@@ -130,15 +196,21 @@ check_docker() {
         log "✅ Contenedor activo"
     else
         log "⚠️ Contenedor caído. Reiniciando..."
-        docker start "$CONTAINER_NAME"
+        run_cmd docker start "$CONTAINER_NAME"
     fi
 }
 
 # =========================
-# EJECUCIÓN
+# MAIN
 # =========================
 main() {
     validate_env
+
+    if [[ "$ONLY_BACKUP" == true ]]; then
+        backup
+        return
+    fi
+
     cleanup_tmp
     backup
     check_services
